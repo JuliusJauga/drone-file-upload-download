@@ -1,0 +1,50 @@
+# Configuration for device and storage settings
+device:
+  inputDeviceName: "SD_CARD"
+  outputDeviceName: "OUTPUT"
+  inputDeviceMountPoint: "/media/dbox/INPUT/"
+  outputDeviceMountPoint: "/media/dbox/OUTPUT/"
+
+# Configuration for Azure storage
+azureStorage:
+  containerName: "nuotraukos"
+  storageAccountName: "cloudas"
+  azureConnectionFileName: "azure_connection.yaml"
+  azureConnectionStringFileName: "azureConnectionString.json"
+
+# Configuration for drone
+drone:
+  vendorID: "2ca3"
+
+# Paths for folders
+paths:
+  imageFolderPath: "/daugiau/"
+  outputFolderPath: "/home/dbox/Desktop/images/"
+
+# Configuration for data processing
+processing:
+  deleteKeyWord: "DELETE_ME"
+  timeInterval: 1  # in seconds
+  uploadChunkSize: 1024  # in bytes
+  downloadChunkSize: 2048  # in bytes
+
+# MQTT configuration
+mqtt:
+  broker: "mqtt.eclipseprojects.io"
+  port: 1883
+  topicDwnStr: "DBOX/DWNSTR"
+  topicUplStr: "DBOX/UPLSTR"
+  topicDwnRes: "DBOX/DWNRES"
+  topicUplReq: "DBOX/UPLREQ"
+  topicDwnReq: "DBOX/DWNREQ"
+  qos: 0
+  keepAlive: 60
+  clientId: "DBOX"
+  username: ""
+  password: ""
+  cleanSession: true
+  connectionTimeout: 30
+  lastWillTopic: "DBOX/STR"
+  lastWillMessage: "DBOX file upload is offline"
+  lastWillQos: 0
+  lastWillRetain: false
