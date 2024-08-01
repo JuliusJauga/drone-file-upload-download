@@ -729,7 +729,7 @@ if __name__ == "__main__":
     MQTT_CLIENT_NAME = config.get('mqtt.clientId')
 
 
-    mqtt_client = mqtt.Client(MQTT_CLIENT_NAME)
+    mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, MQTT_CLIENT_NAME)
     mqtt_client.on_connect = on_connect
     mqtt_client.on_message = on_message
     mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
