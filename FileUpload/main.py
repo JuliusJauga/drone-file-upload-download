@@ -419,7 +419,7 @@ class DeviceManager:
         else:
             current_time = time.time()
             current_time = datetime.fromtimestamp(current_time).strftime('%Y%m%d_%H%M%S')
-        subfolder_name = f"{self.device_manager.drone_device_name}_{current_time}"
+        subfolder_name = f"{self.drone_device_name}_{current_time}"
         return subfolder_name
 class ProcessHandler:
     def __init__(self, azure_storage: AzureStorage, device_manager: DeviceManager, in_progress_word: str, container_name: str, mqtt_client: mqtt.Client, MQTT_TOPIC_DWNSTR: str, MQTT_TOPIC_UPLSTR: str, MQTT_TOPIC_DWNRES: str, MQTT_TOPIC_UPLREQ: str, MQTT_TOPIC_DWNREQ: str) -> None:
