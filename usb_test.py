@@ -185,6 +185,12 @@ class DeviceManager:
         self.moved_data = 0
         self.drone_folder_size = 0
         
+
+        self.drone_device = "/dev/sda1"
+        self.drone_device_name = "Mavic3"
+        self.drone_mount_point = self.check_if_mounted("/dev/sdb1")
+        self.output_folder_path = "/home/juliusj/Desktop/images"
+        self.image_folder_path = "daugiau"
     def listen_for_drone(self) -> None:
         while True:
             context = pyudev.Context()
@@ -208,6 +214,8 @@ class DeviceManager:
         if self.drone_mount_point is not None:
             self.unmount_disk(self.drone_mount_point)
     def move_data_from_drone(self, folder_name: str, chunk_size: int, stop_signal: multiprocessing.Event, queue: multiprocessing.Queue) -> None:
+        image_folder_path = os.path.basename(os.path.normpath(self.image_folder_path))
+        drone_mount_point = os.path.basename(os.path.normpath(self.drone_mount_point))
         source_path = os.path.join(self.drone_mount_point, self.image_folder_path)
         self.drone_folder_size = self.get_folder_size(source_path)
         print(self.drone_folder_size)
@@ -258,6 +266,7 @@ class DeviceManager:
         with concurrent.futures.ThreadPoolExecutor() as executor:
             futures = {executor.submit(move_file, file): file for file in files}
             while futures:
+                
                 #concurrent.futures.wait(futures)
                 for future in concurrent.futures.as_completed(futures):
                     current_time = time.time()
@@ -265,12 +274,13 @@ class DeviceManager:
                         start_time = current_time
                         data = (True, self.moved_data, self.drone_folder_size)
                         queue.put(data)
+                        
                     self.moved_data += future.result()
                     futures.pop(future)
         if stop_signal.is_set():
             print("Moving process interrupted")
             return
-        print("Finished moving all files")
+        print("Finished moving files HUH BROKSI")
         return
 
     def get_folder_size(self, folder_path: str) -> int:
@@ -444,7 +454,7 @@ class ProcessHandler:
     def handle_moving_process(self, queue_status: multiprocessing.Queue, queue_response: multiprocessing.Queue) -> None:
         while True:
             self.downloading = False
-            self.device_manager.listen_for_drone()
+            #self.device_manager.listen_for_drone()
             self.queue_status(False, self.device_manager.moved_data, self.device_manager.drone_folder_size, queue_status)
             current_time = self.device_manager.find_latest_image_drone()
             if current_time is not None:
@@ -458,13 +468,13 @@ class ProcessHandler:
             self.device_manager.move_data_from_drone(subfolder_name, self.device_manager.chunk_size, self.stop_signal_moving, queue_status)
             self.downloading = False
             self.queue_status(False, self.device_manager.moved_data, self.device_manager.drone_folder_size, queue_status)
-            self.device_manager.rename_folder_drone(subfolder_name, self.in_progress_word)
-            self.device_manager.unmount_drone()
+            #self.device_manager.rename_folder_drone(subfolder_name, self.in_progress_word)
+            #self.device_manager.unmount_drone()
             if self.stop_signal_moving.is_set():
                 print("Moving process halted")
                 self.queue_status(False, self.device_manager.moved_data, self.device_manager.drone_folder_size, queue_response)
                 self.stop_signal_moving.clear()
-            self.device_manager.wait_for_disconnect_drone()
+            #self.device_manager.wait_for_disconnect_drone()
             print("Finished")
             exit(0)
     def handle_sending_process(self, queue_status: multiprocessing.Queue) -> None:
@@ -652,6 +662,7 @@ def is_jpeg_by_filename(file_name: str) -> bool:
 
 def on_connect(client, userdata, flags, rc):
     print("Connected with result code "+str(rc))
+    client.subscribe(MQTT_TOPIC)
     client.subscribe("DBOX/DWNREQ")
     client.subscribe("DBOX/DWNSTR")
     client.subscribe("CLOUD/UPLREQ")
@@ -703,10 +714,19 @@ if __name__ == "__main__":
     MQTT_CLIENT_NAME = config.get('mqtt.clientId')
 
 
-    mqtt_client = mqtt.Client(MQTT_CLIENT_NAME)
+    MQTT_PORT = 1883
+    MQTT_TOPIC = "COMMANDS"
+    MQTT_BROKER = "mqtt.eclipseprojects.io"
+    mqtt_client = mqtt.Client("DBOX")
     mqtt_client.on_connect = on_connect
     mqtt_client.on_message = on_message
     mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
+    #def mqtt_loop(client: mqtt.Client) -> None:
+    #    mqtt_client.loop_forever()
+
+    #mqtt_thread = threading.Thread(target=mqtt_loop, args=(mqtt_client,))
+    #mqtt_thread.start()
+
     AzureStorage = AzureStorage(storage_account_name, azure_connection_file_name, upload_chunk_size)
     DeviceManager = DeviceManager(input_device_name, input_device_mount_point, drone_vendor_id, image_folder_path, output_folder_path, time_interval, download_chunk_size)
     ProcessHandler = ProcessHandler(AzureStorage, DeviceManager, delete_key_word, container_name, mqtt_client, MQTT_TOPIC_DWNSTR, MQTT_TOPIC_UPLSTR, MQTT_TOPIC_DWNRES, MQTT_TOPIC_UPLREQ, MQTT_TOPIC_DWNREQ)
