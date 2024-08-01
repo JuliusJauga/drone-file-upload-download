@@ -1,4 +1,6 @@
 # drone file upload download
+ Still needs testing with an actual drone, file upload not tested because subsription terminated.
+ Need to add proper error handling.
  ## Setup
    - `mkdir /home/dbox/FileUpload` and scp files or `scp -r /[LOCAL_PATH]/FileUpload dbox@[DBOX_IP]:/home/dbox/FileUpload/`
    
@@ -17,6 +19,10 @@
    - `sudo systemctl enable file_upload_service`
    
    - `sudo systemctl start file_upload_service`
-   
-   
+ ## TODO
+   - Error handling
+   - Testing
+   - Refactoring
+   - Splitting into files
+   - Cleaning up
    
