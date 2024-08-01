@@ -33,7 +33,7 @@ import DownloadStateStream_pb2    # monitoring download state   variables: bool 
 # Dependencies: azure-core, pyudev, paho-mqtt, pillow, azure-storage-blob, azure-identity, protobuf, psutil
 
 class ConfigYAML:
-    def __init__(self, config_file):
+    def __init__(self, config_file: str) -> None:
         self._config = self._load_config(config_file)
 
     def _load_config(self, config_file):
@@ -50,7 +50,7 @@ class ConfigYAML:
             return default
         return value
 class ConfigJSON:
-    def __init__(self, config_file):
+    def __init__(self, config_file: str) -> None:
         self._config = self._load_config(config_file)
 
     def _load_config(self, config_file):

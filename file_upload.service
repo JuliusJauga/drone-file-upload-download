@@ -1,0 +1,16 @@
+[Unit]
+Description=File upload download
+After=network.target
+
+[Service]
+User=dbox
+Group=dbox
+WorkingDirectory=/home/dbox/FileUpload/main.py
+ExecStart=/home/dbox/FileUpload/venv/bin/python /home/dbox/FileUpload/main.py
+Restart=always
+RestartSec=2s
+Environment="PATH=/home/dbox/FileUpload/venv/bin"
+Environment="PYTHONUNBUFFERED=1"
+
+[Install]
+WantedBy=multi-user.target
