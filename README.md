@@ -1,7 +1,6 @@
 # drone file upload download
- Still needs testing with an actual drone, file upload not tested because subsription terminated.
+ Still needs testing with an actual drone, file upload not tested because subscription terminated.
  Need to add proper error handling.
- Start
  ## Setup
    - `mkdir /home/dbox/FileUpload` and scp files or `scp -r /[LOCAL_PATH]/FileUpload dbox@[DBOX_IP]:/home/dbox/FileUpload/`
    
