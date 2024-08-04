@@ -183,7 +183,7 @@ class AzureStorage:
                     if current_time - start_time >= time_interval:
                         start_time = current_time
                         data = (True, self.uploaded_bytes, self.total_bytes)
-                    queue.put(data)
+                        queue.put(data)
         except FileNotFoundError as e:
             ...
         return uploaded_file_names
