@@ -161,7 +161,7 @@ class AzureStorage:
     def get_container(self, container_name: str) -> ContainerClient:
         return self.blob_service_client.get_container_client(container_name)
     
-    def send_data_drone(self, destination_mountpoint: str, subfolder_name: str, container_name: str, in_progress_word: str, stop_signal: multiprocessing.Event, queue: multiprocessing.Queue) -> Optional[List[str]]:
+    def send_data_drone(self, destination_mountpoint: str, subfolder_name: str, container_name: str, in_progress_word: str, stop_signal: multiprocessing.Event, queue: multiprocessing.Queue, time_interval) -> Optional[List[str]]:
         folder_path = os.path.join(destination_mountpoint, subfolder_name)
         uploaded_file_names = []
         if not os.path.exists(folder_path) or not os.path.isdir(folder_path):
@@ -175,10 +175,14 @@ class AzureStorage:
                     continue
                 file_path = os.path.join(folder_path, file)
                 blob_name = os.path.join(subfolder_name, file).replace(os.sep, '/')
+                start_time = time.time()
                 if self.upload_blob(container_name, file, file_path, blob_name, in_progress_word, stop_signal):
                     uploaded_file_names.append(file)
                     self.uploaded_bytes += os.path.getsize(file_path)
-                    data = (True, self.uploaded_bytes, self.total_bytes)
+                    current_time = time.time()
+                    if current_time - start_time >= time_interval:
+                        start_time = current_time
+                        data = (True, self.uploaded_bytes, self.total_bytes)
                     queue.put(data)
         except FileNotFoundError as e:
             ...
@@ -502,7 +506,7 @@ class ProcessHandler:
                     continue
                 self.uploading = True
                 self.queue_status(True, self.uploaded_bytes, self.total_bytes, queue_status)
-                uploaded_files = self.azure_storage.send_data_drone(self.device_manager.output_folder_path, subfolder_name, self.device_manager.drone_device_name, self.container_name, self.in_progress_word, self.stop_signal_sending, queue_status)
+                uploaded_files = self.azure_storage.send_data_drone(self.device_manager.output_folder_path, subfolder_name, self.device_manager.drone_device_name, self.container_name, self.in_progress_word, self.stop_signal_sending, queue_status, self.device_manager.time_interval)
                 self.queue_status(False, self.uploaded_bytes, self.total_bytes, queue_status)
                 if not uploaded_files:
                     continue
