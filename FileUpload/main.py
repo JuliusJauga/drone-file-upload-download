@@ -156,6 +156,7 @@ class AzureStorage:
                 return True
             except FileNotFoundError as e:
                 return False
+        return False
     
     def get_container(self, container_name: str) -> ContainerClient:
         return self.blob_service_client.get_container_client(container_name)
