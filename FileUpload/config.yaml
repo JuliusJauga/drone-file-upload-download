@@ -15,15 +15,15 @@ drone:
 
 # Paths for folders
 paths:
-  imageFolderPath: "/daugiau/"
+  imageFolderPath: "/daugiau/" # Folder for where the photos are located inside the SD_CARD of the drone. for example /DCIM/photos.
   outputFolderPath: "/home/dbox/Desktop/images/"
 
 # Configuration for data processing
 processing:
   deleteKeyWord: "DELETE_ME"
   timeInterval: 1  # in seconds
-  uploadChunkSize: 1024  # in bytes
-  downloadChunkSize: 2048  # in bytes
+  uploadChunkSize: 1024  # in kilobytes
+  downloadChunkSize: 2048  # in kilobytes
 
 # MQTT configuration
 mqtt:

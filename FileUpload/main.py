@@ -44,6 +44,7 @@ class ConfigYAML:
             for k in keys:
                 value = value[k]
         except KeyError:
+            print("Failed to retrieve config field.")
             return default
         return value
 class ConfigJSON:
@@ -714,8 +715,8 @@ if __name__ == "__main__":
     input_device_name = config.get('device.inputDeviceName')
     container_name = config.get('azureStorage.containerName')
     storage_account_name = config.get('azureStorage.storageAccountName')
-    #azure_connection_file_name = config.get('azureStorage.azureConnectionFileNameYAML')
-    azure_connection_file_name = config.get('azureStorage.azureConnectionFileNameJSON')
+    azure_connection_file_name = config.get('azureStorage.azureConnectionFileNameYAML')
+    #azure_connection_file_name = config.get('azureStorage.azureConnectionFileNameJSON')
     input_device_mount_point = config.get('device.inputDeviceMountPoint')
     delete_key_word = config.get('processing.deleteKeyWord')
     drone_vendor_id = config.get('drone.vendorID')
@@ -732,13 +733,22 @@ if __name__ == "__main__":
     MQTT_TOPIC_DWNREQ = config.get('mqtt.topicDwnReq')
     MQTT_BROKER = config.get('mqtt.broker')
     MQTT_CLIENT_NAME = config.get('mqtt.clientId')
-
-
-    mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, MQTT_CLIENT_NAME)
+    if None in [input_device_name, container_name, storage_account_name, azure_connection_file_name, input_device_mount_point, delete_key_word, drone_vendor_id, image_folder_path, output_folder_path, time_interval, upload_chunk_size, download_chunk_size, MQTT_PORT, MQTT_TOPIC_DWNSTR, MQTT_TOPIC_UPLSTR, MQTT_TOPIC_DWNRES, MQTT_TOPIC_UPLREQ, MQTT_TOPIC_DWNREQ, MQTT_BROKER, MQTT_CLIENT_NAME]:    
+        print("Failed to retrieve values exiting program.")
+        exit(1)
+    try:
+        mqtt_client = mqtt.Client(MQTT_CLIENT_NAME)
+    except Exception as e:
+        mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, MQTT_CLIENT_NAME)
     mqtt_client.on_connect = on_connect
     mqtt_client.on_message = on_message
-    mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
+    if mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60) != 0:
+        print("MQTT | Connection failed")
+        exit(1)
     AzureStorage = AzureStorage(storage_account_name, azure_connection_file_name, upload_chunk_size)
+    if AzureStorage.check_connection == False:
+        print("Failed to connect to Azure")
+        exit(1)
     DeviceManager = DeviceManager(input_device_name, input_device_mount_point, drone_vendor_id, image_folder_path, output_folder_path, time_interval, download_chunk_size)
     ProcessHandler = ProcessHandler(AzureStorage, DeviceManager, delete_key_word, container_name, mqtt_client, MQTT_TOPIC_DWNSTR, MQTT_TOPIC_UPLSTR, MQTT_TOPIC_DWNRES, MQTT_TOPIC_UPLREQ, MQTT_TOPIC_DWNREQ)
     ProcessHandler.start_processes()
