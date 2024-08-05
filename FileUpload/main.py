@@ -598,7 +598,7 @@ class ProcessHandler:
             self.make_download_stream_message(client)
             self.make_upload_stream_message(client)
             if self.check_for_response():
-                self.make_download_response_message()
+                self.make_download_response_message(client)
             time.sleep(self.device_manager.time_interval)
             client.loop_stop()
             # Check if processes are alive
@@ -648,7 +648,7 @@ class ProcessHandler:
                     continue
             except multiprocessing.queues.Empty:
                 return False
-    def make_download_response_message(self) -> None:
+    def make_download_response_message(self, client) -> None:
         print("MQTT | Making download response message")
         download_stream = DownloadResponse_pb2.DownloadResponse()
         download_stream.progressBytes = int(self.download_progress)
@@ -658,7 +658,7 @@ class ProcessHandler:
             download_stream.progressPercent = int(self.download_progress * 100 / self.download_amount)
         download_stream.downloadingStatus = self.downloading
         serialized_download_response = download_stream.SerializeToString()
-        self.client.publish(MQTT_TOPIC_DWNRES, serialized_download_response)
+        client.publish(MQTT_TOPIC_DWNRES, serialized_download_response)
     def make_download_stream_message(self, client) -> None:
         download_stream = DownloadStateStream_pb2.DownloadStateStream()
         download_stream.progressBytes = int(self.download_progress)
@@ -691,22 +691,24 @@ def on_connect(client, userdata, flags, rc):
     client.subscribe(MQTT_TOPIC_UPLREQ)
     print("MQTT | Subscribed to topics")
 
-def on_message(client, userdata, msg):
+def on_message(client, userdata, msg, process_handler: ProcessHandler):
     if msg.topic == MQTT_TOPIC_DWNREQ:
         print("MQTT | Received cancel download request")
         download_request = DownloadRequest_pb2.DownloadRequest()
         download_request.ParseFromString(msg.payload)
         if download_request.action == "CANCEL DOWNLOAD":
-            ProcessHandler.stop_moving()
+            process_handler.stop_moving()
     elif msg.topic == MQTT_TOPIC_UPLREQ:
         upload_request = CloudUploadAllowance_pb2.CloudUploadAllowance()
         upload_request.ParseFromString(msg.payload)
         if upload_request.allowance == "FORBIDDEN":
-            ProcessHandler.stop_sending()
+            process_handler.stop_sending()
         elif upload_request.allowance == "ALLOWED":
-            ProcessHandler.start_sending()
-    
-
+            process_handler.start_sending()    
+def on_message_wrapper(process_handler: ProcessHandler):
+    def wrapper(client, userdata, msg):
+        on_message(client, userdata, msg, process_handler)
+    return wrapper
 if __name__ == "__main__":
     config_path = os.path.join(os.path.dirname(__file__), "config.yaml")
     config = ConfigYAML(config_path)
@@ -740,16 +742,16 @@ if __name__ == "__main__":
         mqtt_client = mqtt.Client(MQTT_CLIENT_NAME)
     except Exception as e:
         mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, MQTT_CLIENT_NAME)
+    azure_storage = AzureStorage(storage_account_name, azure_connection_file_name, upload_chunk_size)
+    if azure_storage.check_connection == False:
+        print("Failed to connect to Azure")
+        exit(1)
+    device_manager = DeviceManager(input_device_name, input_device_mount_point, drone_vendor_id, image_folder_path, output_folder_path, time_interval, download_chunk_size)
+    process_handler = ProcessHandler(azure_storage, device_manager, delete_key_word, container_name, mqtt_client, MQTT_TOPIC_DWNSTR, MQTT_TOPIC_UPLSTR, MQTT_TOPIC_DWNRES, MQTT_TOPIC_UPLREQ, MQTT_TOPIC_DWNREQ)
     mqtt_client.on_connect = on_connect
-    mqtt_client.on_message = on_message
+    mqtt_client.on_message = on_message_wrapper(process_handler)
     if mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60) != 0:
         print("MQTT | Connection failed")
         exit(1)
-    AzureStorage = AzureStorage(storage_account_name, azure_connection_file_name, upload_chunk_size)
-    if AzureStorage.check_connection == False:
-        print("Failed to connect to Azure")
-        exit(1)
-    DeviceManager = DeviceManager(input_device_name, input_device_mount_point, drone_vendor_id, image_folder_path, output_folder_path, time_interval, download_chunk_size)
-    ProcessHandler = ProcessHandler(AzureStorage, DeviceManager, delete_key_word, container_name, mqtt_client, MQTT_TOPIC_DWNSTR, MQTT_TOPIC_UPLSTR, MQTT_TOPIC_DWNRES, MQTT_TOPIC_UPLREQ, MQTT_TOPIC_DWNREQ)
-    ProcessHandler.start_processes()
+    process_handler.start_processes()
     
