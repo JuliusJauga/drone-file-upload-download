@@ -350,9 +350,15 @@ class DeviceManager:
             folder_path = os.path.join(path, folder)
             if in_progress_word in folder:
                 continue
-            new_folder_name = f"{folder}_{in_progress_word}"
-            new_folder_path = os.path.join(path, new_folder_name)
-            os.rename(folder_path, new_folder_path)    
+            try:
+                new_folder_name = f"{folder}_{in_progress_word}"
+                new_folder_path = os.path.join(path, new_folder_name)
+                os.rename(folder_path, new_folder_path)    
+            except Exception as e:
+                new_folder_name = f"{folder}_{in_progress_word} (Copy)"
+                new_folder_path = os.path.join(path, new_folder_name)
+                os.rename(folder_path, new_folder_path)
+
     def rename_files_drone(self, folder_name: str, files: List[str], in_progress_word: str, dbox_index: int) -> None:
         dbox_index = str(dbox_index)
         folder_path = os.path.join(self.output_folder_path, dbox_index, folder_name)
@@ -526,7 +532,8 @@ class ProcessHandler:
                 print("Moving process halted, drone unmounted")
                 self.queue_status_download(DownloadState.IDLE, self.device_manager.moved_data, self.device_manager.drone_folder_size, queue_status)
                 self.stop_signal_moving.clear()
-            self.device_manager.wait_for_disconnect_drone()
+                break
+            #self.device_manager.wait_for_disconnect_drone()
     def handle_sending_process(self, queue_status: multiprocessing.Queue) -> None:
         while True:
             print("Sending process started")
