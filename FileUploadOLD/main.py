@@ -20,8 +20,13 @@ import paho.mqtt.client as mqtt
 import pyudev
 import yaml
 
-from box_upload_api_pb2 import UploadState, DownloadAllowance, DownloadStateStream, DownloadAllowanceStream, DownloadAllowanceRequest, DownloadResponse, CloudUploadStateStream, CloudUploadAllowanceStream, CloudUploadAllowance, DownloadMode, DownloadState
+import CloudUploadAllowance_pb2   # upload allowance request    variables: string allowance                                                     TOPIC: CLOUD/UPLREQ
+import CloudUploadStateStream_pb2 # monitoring upload state     variables: bool uploadingStatus, int32 progressBytes, int32 progressPercent     TOPIC: CLOUD/UPLSTR
+import DownloadRequest_pb2        # download allowance request  variables: string action                                                        TOPIC: DBOX/DWNREQ
+import DownloadResponse_pb2       # download allowance response variables: bool downloadingStatus, int32 progressBytes, int32 progressPercent   TOPIC: DBOX/DWNRES
+import DownloadStateStream_pb2    # monitoring download state   variables: bool downloadingStatus, int32 progressBytes, int32 progressPercent   TOPIC: DBOX/DWNSTR
 
+import box_upload_api_pb2
 
 # Dependencies: azure-core, pyudev, paho-mqtt, pillow, azure-storage-blob, azure-identity, protobuf, psutil
 
@@ -158,8 +163,8 @@ class AzureStorage:
     def get_container(self, container_name: str) -> ContainerClient:
         return self.blob_service_client.get_container_client(container_name)
     
-    def send_data_drone(self, output_folder_path: str, subfolder_name: str, container_name: str, in_progress_word: str, stop_signal: multiprocessing.Event, queue: multiprocessing.Queue, time_interval) -> Optional[List[str]]:
-        folder_path = os.path.join(output_folder_path, subfolder_name)
+    def send_data_drone(self, destination_mountpoint: str, subfolder_name: str, container_name: str, in_progress_word: str, stop_signal: multiprocessing.Event, queue: multiprocessing.Queue, time_interval) -> Optional[List[str]]:
+        folder_path = os.path.join(destination_mountpoint, subfolder_name)
         uploaded_file_names = []
         if not os.path.exists(folder_path) or not os.path.isdir(folder_path):
             return
@@ -179,7 +184,7 @@ class AzureStorage:
                     current_time = time.time()
                     if current_time - start_time >= time_interval:
                         start_time = current_time
-                        data = (UploadState.IN_PROGRESS, self.uploaded_bytes, self.total_bytes)
+                        data = (True, self.uploaded_bytes, self.total_bytes)
                         queue.put(data)
         except FileNotFoundError as e:
             ...
@@ -202,25 +207,14 @@ class DeviceManager:
         
         dbox_index = str(dbox_index)
         os.makedirs(os.path.join(self.output_folder_path, dbox_index), exist_ok=True)
-    def listen_for_drone(self, queue: multiprocessing.Queue, stop_signal: multiprocessing.Event) -> None:
+    def listen_for_drone(self) -> None:
         while True:
-            if stop_signal.is_set():
-                print("Listening for drone halted")
-                time.sleep(self.time_interval)
-                continue
             context = pyudev.Context()
             for device in context.list_devices(subsystem='usb'):
                 if device.get('ID_VENDOR_ID') == self.drone_vendor_id:
                     for child in device.children:
                         if child.subsystem == 'block':
                             print(f"Device found: {child.device_node}")
-                            updated_queue = False
-                            while stop_signal.is_set():
-                                print("Mount not allowed")
-                                if not updated_queue:
-                                    queue.put((DownloadState.NOT_MOUNTED, self.moved_data, self.drone_folder_size))
-                                    updated_queue = True
-                                time.sleep(self.time_interval)
                             self.handle_drone_mounting(child.device_node)
                             self.drone_device_name = device.get('ID_MODEL')
                             self.drone_device = child.device_node
@@ -300,7 +294,7 @@ class DeviceManager:
                         current_time = time.time()
                         if current_time - start_time >= self.time_interval:
                             start_time = current_time
-                            data = (DownloadState.BUSY, self.moved_data, self.drone_folder_size)
+                            data = (True, self.moved_data, self.drone_folder_size)
                             queue.put(data)
                         self.moved_data += future.result()
                         futures.pop(future)
@@ -348,14 +342,11 @@ class DeviceManager:
         folders = os.listdir(path)
         for folder in folders:
             folder_path = os.path.join(path, folder)
-            if in_progress_word in folder:
-                continue
             new_folder_name = f"{folder}_{in_progress_word}"
             new_folder_path = os.path.join(path, new_folder_name)
             os.rename(folder_path, new_folder_path)    
-    def rename_files_drone(self, folder_name: str, files: List[str], in_progress_word: str, dbox_index: int) -> None:
-        dbox_index = str(dbox_index)
-        folder_path = os.path.join(self.output_folder_path, dbox_index, folder_name)
+    def rename_files_drone(self, folder_name: str, files: List[str], in_progress_word: str) -> None:
+        folder_path = os.path.join(self.output_folder_path, folder_name)
         for file in files:
             file_path = os.path.join(folder_path, file)
             new_file_name = file.replace(file, in_progress_word)
@@ -474,7 +465,6 @@ class ProcessHandler:
         self.stop_signal_sending = multiprocessing.Event()
         self.stop_signal_moving = multiprocessing.Event()
         self.stop_signal_trash = multiprocessing.Event()
-        self.stop_signal_download = multiprocessing.Event()
 
 
         self.move_process = multiprocessing.Process(target=self.handle_moving_process, args=(self.queue_download, self.queue_response,))
@@ -498,71 +488,65 @@ class ProcessHandler:
         self.total_bytes = 0
 
         self.sending_bool = False
-        self.moving_bool = False
-
-        self.download_state = DownloadState.IDLE
-        self.upload_state = UploadState.NO_UPLOAD
     def start_processes(self) -> None:
-       # self.move_process.start()
-       # self.send_process.start()
-       # self.trash_collecting_process.start()
+        self.move_process.start()
+        self.send_process.start()
         
+        self.trash_collecting_process.start()
+
         self.monitor_processes(self.client)
     
     
     def handle_moving_process(self, queue_status: multiprocessing.Queue, queue_response: multiprocessing.Queue) -> None:
-        while True:    
+        while True:
             self.downloading = False
-            self.queue_status_download(DownloadState.IDLE, self.device_manager.moved_data, self.device_manager.drone_folder_size, queue_status)
-            self.device_manager.listen_for_drone(queue_status, self.stop_signal_download)
-            self.queue_status_download(DownloadState.BUSY, self.device_manager.moved_data, self.device_manager.drone_folder_size, queue_status)
+            self.device_manager.listen_for_drone()
+            self.queue_status(False, self.device_manager.moved_data, self.device_manager.drone_folder_size, queue_status)
+            #subfolder_name = self.device_manager.make_subfolder_name()
+            self.queue_status(True, self.device_manager.moved_data, self.device_manager.drone_folder_size, queue_status)
             self.device_manager.move_data_from_drone(self.device_manager.dbox_index, self.device_manager.chunk_size, self.stop_signal_moving, queue_status)
             self.downloading = False
+            self.queue_status(False, self.device_manager.moved_data, self.device_manager.drone_folder_size, queue_status)
+            #self.device_manager.rename_folder_drone(subfolder_name, self.in_progress_word)
             dbox_index = str(self.device_manager.dbox_index)
-            self.device_manager.unmount_drone()
-            self.queue_status_download(DownloadState.IDLE, self.device_manager.moved_data, self.device_manager.drone_folder_size, queue_status)
             self.device_manager.rename_folders_drone(os.path.join(self.device_manager.output_folder_path, dbox_index), self.in_progress_word)
+            self.device_manager.unmount_drone()
             if self.stop_signal_moving.is_set():
                 print("Moving process halted, drone unmounted")
-                self.queue_status_download(DownloadState.IDLE, self.device_manager.moved_data, self.device_manager.drone_folder_size, queue_status)
+                self.queue_status(False, self.device_manager.moved_data, self.device_manager.drone_folder_size, queue_response)
                 self.stop_signal_moving.clear()
             self.device_manager.wait_for_disconnect_drone()
     def handle_sending_process(self, queue_status: multiprocessing.Queue) -> None:
         while True:
-            print("Sending process started")
-            dbox_index = str(self.device_manager.dbox_index)
+            time.sleep(30)
+            break
             self.uploading = False
-            subfolder_name_list = self.device_manager.get_folder_names_drone(dbox_index)
+            subfolder_name_list = self.device_manager.get_folder_names_drone(self.device_manager.dbox_index)
             self.azure_storage.uploaded_bytes = 0
             self.azure_storage.total_bytes = 0
             for subfolder_name in subfolder_name_list[:]:
-                self.azure_storage.total_bytes += self.device_manager.get_folder_size(os.path.join(self.device_manager.output_folder_path, dbox_index, subfolder_name))
+                self.azure_storage.total_bytes += self.device_manager.get_folder_size(os.path.join(self.device_manager.output_folder_path, subfolder_name))
             for subfolder_name in subfolder_name_list[:]:
                 if self.stop_signal_sending.is_set():
                     break
                 if not (self.in_progress_word in subfolder_name):
                     continue
                 self.uploading = True
-                self.queue_status(UploadState.NO_UPLOAD, self.uploaded_bytes, self.total_bytes, queue_status)
-                uploaded_files = self.azure_storage.send_data_drone(os.path.join(self.device_manager.output_folder_path, dbox_index), subfolder_name, self.device_manager.drone_device_name, self.container_name, self.in_progress_word, self.stop_signal_sending, queue_status, self.device_manager.time_interval)
-                self.queue_status(UploadState.IN_PROGRESS, self.uploaded_bytes, self.total_bytes, queue_status)
+                self.queue_status(True, self.uploaded_bytes, self.total_bytes, queue_status)
+                uploaded_files = self.azure_storage.send_data_drone(self.device_manager.output_folder_path, subfolder_name, self.device_manager.drone_device_name, self.container_name, self.in_progress_word, self.stop_signal_sending, queue_status, self.device_manager.time_interval)
+                self.queue_status(False, self.uploaded_bytes, self.total_bytes, queue_status)
                 if not uploaded_files:
                     continue
                 if not self.device_manager.rename_files_drone(subfolder_name, uploaded_files, self.in_progress_word):
                     new_folder_name = f"{subfolder_name}_{self.in_progress_word}"
                     self.device_manager.rename_files_drone(new_folder_name, uploaded_files, self.in_progress_word)
             if self.stop_signal_sending.is_set():
-                self.queue_status(UploadState.PAUSED, self.uploaded_bytes, self.total_bytes, queue_status)
                 break
-            self.queue_status(UploadState.NO_UPLOAD, self.uploaded_bytes, self.total_bytes, queue_status)
             time.sleep(self.device_manager.time_interval)
         print("Sending process halted")
         self.stop_signal_sending.clear()
         exit(0)
-    def queue_status(self, status: UploadState, progress: int, total: int, queue) -> None:
-        data = (status, progress, total)
-        queue.put(data)
-    def queue_status_download(self, status: DownloadState, progress: int, total: int, queue) -> None:
+    def queue_status(self, status: bool, progress: int, total: int, queue) -> None:
         data = (status, progress, total)
         queue.put(data)
     def handle_trash_process(self) -> None:
@@ -603,7 +587,6 @@ class ProcessHandler:
         self.sending_bool = False
     def stop_moving(self) -> None:
         self.stop_signal_moving.set()
-        self.stop_signal_download.set()
     def stop_trash(self) -> None:
         self.stop_signal_trash.set()
         self.trash_collecting_process.join()
@@ -615,8 +598,6 @@ class ProcessHandler:
         self.trash_collecting_process = multiprocessing.Process(target=self.handle_trash_process)
         self.trash_collecting_process.start()
     def start_moving(self) -> None:
-        self.stop_signal_download.clear()
-        self.stop_signal_moving.clear()
         if self.move_process.is_alive():
             time.sleep(10)
             if self.move_process.is_alive():
@@ -642,12 +623,14 @@ class ProcessHandler:
             client.loop_start()
             self.make_download_stream_message(client)
             self.make_upload_stream_message(client)
+            if self.check_for_response():
+                self.make_download_response_message(client)
             time.sleep(self.device_manager.time_interval)
             client.loop_stop()
             # Check if processes are alive
             if self.sending_bool == True and not self.send_process.is_alive():
                 self.start_sending()
-            if self.moving_bool == True and not self.move_process.is_alive():
+            if not self.move_process.is_alive():
                 self.start_moving()
             if not self.trash_collecting_process.is_alive():
                 self.start_trash()
@@ -658,7 +641,7 @@ class ProcessHandler:
                 if data is None:
                     break
                 try:
-                    self.download_state, self.download_progress, self.download_amount = data
+                    self.downloading, self.download_progress, self.download_amount = data
                 except ValueError as e:
                     print(f"Error: {e}")
                     continue
@@ -671,30 +654,55 @@ class ProcessHandler:
                 if data is None:
                     break
                 try:
-                    self.upload_state, self.uploaded_bytes, self.total_bytes = data
+                    self.uploading, self.uploaded_bytes, self.total_bytes = data
                 except ValueError as e:
                     print(f"Error: {e}")
                     continue
             except multiprocessing.queues.Empty:
                 break
-    def make_download_stream_message(self, client) -> None:
-        download_stream = DownloadStateStream()
-        download_stream.progress = to_uint64(self.download_progress)
+    def check_for_response(self) -> bool:
+        while True:
+            try:
+                data = self.queue_response.get_nowait()
+                if data is None:
+                    return False
+                try:
+                    self.downloading, self.download_progress, self.download_amount = data
+                    return True
+                except ValueError as e:
+                    print(f"Error: {e}")
+                    continue
+            except multiprocessing.queues.Empty:
+                return False
+    def make_download_response_message(self, client) -> None:
+        print("MQTT | Making download response message")
+        download_stream = DownloadResponse_pb2.DownloadResponse()
+        download_stream.progressBytes = self.download_progress
         if self.download_amount == 0:
-            download_stream.total = to_uint64(0)
+            download_stream.progressPercent = 100
         else:
-            download_stream.total = to_uint64(self.download_amount)
-        download_stream.state = self.download_state
+            download_stream.progressPercent = int(self.download_progress * 100 / self.download_amount)
+        download_stream.downloadingStatus = self.downloading
+        serialized_download_response = download_stream.SerializeToString()
+        client.publish(MQTT_TOPIC_DWNRES, serialized_download_response)
+    def make_download_stream_message(self, client) -> None:
+        download_stream = DownloadStateStream_pb2.DownloadStateStream()
+        download_stream.progressBytes = self.download_progress
+        if self.download_amount == 0:
+            download_stream.progressPercent = 100
+        else:
+            download_stream.progressPercent = int(self.download_progress * 100 / self.download_amount)
+        download_stream.downloadingStatus = self.downloading
         serialized_download_response = download_stream.SerializeToString()
         client.publish(MQTT_TOPIC_DWNSTR, serialized_download_response)
     def make_upload_stream_message(self, client):
-        cloud_upload_stream = CloudUploadStateStream()
-        cloud_upload_stream.progress = to_uint64(self.uploaded_bytes)
+        cloud_upload_stream = CloudUploadStateStream_pb2.CloudUploadStateStream()
+        cloud_upload_stream.progressBytes = self.uploaded_bytes
         if self.total_bytes == 0:
-            cloud_upload_stream.total = to_uint64(0)
+            cloud_upload_stream.progressPercent = 100
         else:
-            cloud_upload_stream.total = to_uint64(self.total_bytes)
-        cloud_upload_stream.state = self.upload_state
+            cloud_upload_stream.progressPercent = self.uploaded_bytes * 100 / self.total_bytes
+        cloud_upload_stream.uploadingStatus = self.uploading
         serialized_upload_response = cloud_upload_stream.SerializeToString()
         client.publish(self.MQTT_TOPIC_UPLSTR, serialized_upload_response)
 
@@ -702,8 +710,7 @@ def is_jpeg_by_filename(file_name: str) -> bool:
     lower_file_name = file_name.lower()
     return True
     #return lower_file_name.endswith('.jpg') or lower_file_name.endswith('.jpeg') or lower_file_name.endswith('.png')
-def to_uint64(value):
-    return value & ((1 << 64) - 1)
+
 
 def on_connect(client, userdata, flags, rc):
     print("MQTT | Connected with result code "+str(rc))
@@ -713,27 +720,18 @@ def on_connect(client, userdata, flags, rc):
 
 def on_message(client, userdata, msg, process_handler: ProcessHandler):
     if msg.topic == MQTT_TOPIC_DWNREQ:
-        download_request = DownloadAllowanceStream()
+        print("MQTT | Received cancel download request")
+        download_request = DownloadRequest_pb2.DownloadRequest()
         download_request.ParseFromString(msg.payload)
-        if download_request.allowance == DownloadAllowance.DL_ALLOWED:
-            process_handler.start_moving()
-            print("Received start moving")
-            process_handler.moving_bool = True
-        elif download_request.allowance == DownloadAllowance.DL_FORBIDDEN:
+        if download_request.action == "CANCEL DOWNLOAD":
             process_handler.stop_moving()
-            print("Received stop moving")
-            process_handler.moving_bool = False
     elif msg.topic == MQTT_TOPIC_UPLREQ:
-        upload_request = CloudUploadAllowanceStream()
+        upload_request = CloudUploadAllowance_pb2.CloudUploadAllowance()
         upload_request.ParseFromString(msg.payload)
-        if upload_request.allowance == CloudUploadAllowance.CUA_FORBIDDEN:
+        if upload_request.allowance == "FORBIDDEN":
             process_handler.stop_sending()
-            print("Received stop sending")
-            process_handler.sending_bool = False
-        elif upload_request.allowance == CloudUploadAllowance.CUA_ALLOWED:
-            process_handler.start_sending()
-            print("Received start sending")
-            process_handler.sending_bool = True
+        elif upload_request.allowance == "ALLOWED":
+            process_handler.start_sending()    
 def on_message_wrapper(process_handler: ProcessHandler):
     def wrapper(client, userdata, msg):
         on_message(client, userdata, msg, process_handler)

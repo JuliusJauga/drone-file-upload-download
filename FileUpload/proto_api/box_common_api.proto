@@ -1,0 +1,64 @@
+syntax = "proto3";
+
+/** Common Box MCU API data model. */
+
+option java_package = "app.diab.box.apiv2.common";
+option java_multiple_files = true;
+
+package box_common_api;
+
+
+message StateInfo {
+    enum ProcessState {
+        NONE = 0;
+        IN_PROGRESS = 1;
+        COMPLETED = 2;
+        ABORTED = 3;
+        ERROR = 4;
+    }
+
+    ProcessState progress = 1;
+    uint32 errorCode = 2;
+}
+
+enum FlashMode {
+    PLACEHOLDER_1 = 0;
+    ON = 1;
+    OFF = 2;
+}
+
+enum ResponseStatus {
+    NONE = 0;
+    ACCEPTED = 1;
+    FAILED = 2;
+    REJECTED = 3;
+    ALREADY_IN_PROGRESS = 4;
+    API_NOT_SUPPORTED = 5;
+}
+
+message ControllerInfoRequest {
+
+}
+
+message ControllerInfoResponse {
+    string softwareVersion = 1;
+    string switcherVersion = 2;
+    string softwareType = 3;
+    string serialNumber = 4;
+}
+
+message ControllerFlashModeRequest {
+    FlashMode mode = 1;
+}
+
+message ControllerFlashModeResponse {
+    ResponseStatus response = 1;
+}
+
+message ControllerResetRequest {
+
+}
+
+message ControllerResetResponse {
+    ResponseStatus response = 1;
+}

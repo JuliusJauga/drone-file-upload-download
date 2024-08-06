@@ -1,0 +1,76 @@
+syntax = "proto3";
+
+option java_package = "app.diab.box.apiv2.upload";
+option java_multiple_files = true;
+
+package box_upload_api;
+
+import 'box_common_api.proto';
+
+
+enum DownloadState {
+    NOT_MOUNTED = 0;
+    IDLE = 1;
+    BUSY = 2;
+    DL_ERROR = 7;
+}
+
+enum UploadState {
+    UP_UNKNOWN = 0;
+    NO_UPLOAD = 1;
+    IN_PROGRESS = 2;
+    FINISHED = 3;
+    PAUSED = 4;
+    UP_ERROR = 7;
+}
+
+enum DownloadAllowance {
+    DL_UNKNOWN = 0;
+    DL_ALLOWED = 1;
+    DL_FORBIDDEN = 2;
+}
+
+enum DownloadMode {
+    DISCONNECTED = 0;
+    PORT = 1;
+    RADIO = 2;
+}
+
+
+message DownloadStateStream {
+    DownloadState state = 1;
+    uint64 progress = 2;
+    uint64 total = 3;
+}
+
+message DownloadAllowanceStream {
+    DownloadAllowance allowance = 1;
+    DownloadMode mode = 2;
+}
+
+message DownloadAllowanceRequest {
+    DownloadAllowance allowance = 1;
+    DownloadMode mode = 2;
+}
+
+message DownloadResponse {
+    box_common_api.ResponseStatus response = 1;
+}
+
+message CloudUploadStateStream {
+    UploadState state = 1;
+    uint64 progress = 2;
+    uint64 total = 3;
+}
+
+enum CloudUploadAllowance {
+    CUA_UNKNOWN = 0;
+    CUA_ALLOWED = 1;
+    CUA_FORBIDDEN = 2;
+}
+
+/*Sent TO uploader process*/
+message CloudUploadAllowanceStream {
+    CloudUploadAllowance allowance = 1;
+}
+
