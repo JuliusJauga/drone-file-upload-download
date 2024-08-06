@@ -1,9 +1,8 @@
 # drone file upload download
- Still needs testing with an actual drone, file upload not tested because subscription terminated.
- Need to add proper error handling.
+Application to automatically download and upload data from a drone to Azure cloud using raspberrypi memory card as a buffer.
  ## Setup
-   - `mkdir /home/dbox/FileUpload` and scp files or `scp -r /[LOCAL_PATH]/FileUpload dbox@[DBOX_IP]:/home/dbox/FileUpload/`
-   
+   - `mkdir /home/dbox/FileUpload` and scp files or
+   - `scp -r /[LOCAL_PATH]/FileUpload dbox@[DBOX_IP]:/home/dbox/FileUpload/`
    - `python -m venv  /home/dbox/FileUpload/venv`
    
    - `source /home/dbox/FileUpload/venv/bin/activate`
@@ -20,6 +19,7 @@
    
    - `sudo systemctl start file_upload_service`
  ## TODO
+   - Needs testing in file upload to cloud.
    - Error handling
    - Testing
    - Refactoring
