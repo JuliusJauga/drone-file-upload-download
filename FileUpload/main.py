@@ -290,6 +290,7 @@ class DeviceManager:
                                 break
                             destination_file.write(chunk)
                 #os.remove(source_path) # OPTIONAL
+                subprocess.run(['/usr/bin/sudo', '/usr/bin/rm', source_path], check=True)
                 return True
             start_time = time.time()
             with concurrent.futures.ThreadPoolExecutor() as executor:
@@ -379,7 +380,7 @@ class DeviceManager:
         path = os.path.join(self.output_folder_path, dbox_index)
         folders_ = os.listdir(path)
         for item in folders_:
-            item_path = os.path.join(self.output_folder_path, item)
+            item_path = os.path.join(self.output_folder_path, dbox_index, item)
             if os.path.isdir(item_path) and item != "System Volume Information" and item != ".Trash-1000":
                 folders.append(item)
         return folders
@@ -405,7 +406,7 @@ class DeviceManager:
         return None
     def get_disk_labels(self) -> Dict[str, str]:
         try:
-            blkid_output = subprocess.run(['sudo', 'blkid'], capture_output=True, text=True, check=True)
+            blkid_output = subprocess.run(['/usr/bin/sudo', 'blkid'], capture_output=True, text=True, check=True)
         except subprocess.CalledProcessError as e:
             print(f"Error executing blkid: {e}")
             print(f"Return code: {e.returncode}")
@@ -421,22 +422,23 @@ class DeviceManager:
                 disk_labels[device] = label
         return disk_labels
     def mount_disk(self, device: str, mount_point: str) -> None:
-        username = os.getlogin()
-        subprocess.run(['sudo', 'mkdir', '-p', mount_point], check=True)
+        #username = os.getlogin()
+        username = "root"
+        subprocess.run(['/usr/bin/sudo', '/usr/bin/mkdir', '-p', mount_point], check=True)
         command = f'rw,uid={username},gid={username}'
-        result = subprocess.run(['sudo', 'mount', '-o', command, device, mount_point], check=True)
+        result = subprocess.run(['/usr/bin/sudo', '/usr/bin/mount', '-o', command, device, mount_point], check=True)
         if result.returncode == 0:
             print(f"Disk {device} mounted successfully at {mount_point}.")
         else:
             print(f"Failed to mount disk {device}. Error: {result.stderr.decode('utf-8')}")
     def unmount_disk(self, device: str, mount_point: str) -> None:
-        result = subprocess.run(['sudo', 'umount', mount_point], capture_output=True)
+        result = subprocess.run(['/usr/bin/sudo', 'umount', mount_point], capture_output=True)
         if result.returncode == 0:
             print(f"Disk {device} unmounted successfully from {mount_point}.")
         else:
             print(f"Failed to unmount disk {device}. Error: {result.stderr.decode('utf-8')}")
         if self.check_if_mounted(device):
-            result = subprocess.run(['sudo', 'umount', device], capture_output=True)
+            result = subprocess.run(['/usr/bin/sudo', 'umount', device], capture_output=True)
             if result.returncode == 0:
                 print(f"Disk {device} unmounted successfully.")
             else:
@@ -464,6 +466,17 @@ class DeviceManager:
             current_time = datetime.fromtimestamp(current_time).strftime('%Y%m%d_%H%M%S')
         subfolder_name = f"{self.drone_device_name}_{current_time}"
         return subfolder_name
+    def remove_folders(self) -> None:
+        DBOX_INDEX = str(self.dbox_index)
+        folders = os.listdir(os.path.join(self.drone_mount_point, self.image_folder_path))
+        for folder in folders:
+            folder_path = os.path.join(self.drone_mount_point, self.image_folder_path, folder)
+            try:
+                if os.listdir(folder_path) == 0:
+                    subprocess.run(['/usr/bin/sudo', '/usr/bin/rmdir', folder_path], check=True)
+            except OSError as e:
+                print(f"Error: {e}")
+                continue
 class ProcessHandler:
     def __init__(self, azure_storage: AzureStorage, device_manager: DeviceManager, in_progress_word: str, container_name: str, mqtt_client: mqtt.Client, MQTT_TOPIC_DWNSTR: str, MQTT_TOPIC_UPLSTR: str, MQTT_TOPIC_DWNRES: str, MQTT_TOPIC_UPLREQ: str, MQTT_TOPIC_DWNREQ: str) -> None:
         self.azure_storage = azure_storage
@@ -525,39 +538,47 @@ class ProcessHandler:
             self.device_manager.move_data_from_drone(self.device_manager.dbox_index, self.device_manager.chunk_size, self.stop_signal_moving, queue_status)
             self.downloading = False
             dbox_index = str(self.device_manager.dbox_index)
+            self.device_manager.remove_folders()
             self.device_manager.unmount_drone()
             self.queue_status_download(DownloadState.IDLE, self.device_manager.moved_data, self.device_manager.drone_folder_size, queue_status)
             self.device_manager.rename_folders_drone(os.path.join(self.device_manager.output_folder_path, dbox_index), self.in_progress_word)
+            
             if self.stop_signal_moving.is_set():
                 print("Moving process halted, drone unmounted")
                 self.queue_status_download(DownloadState.IDLE, self.device_manager.moved_data, self.device_manager.drone_folder_size, queue_status)
                 self.stop_signal_moving.clear()
                 break
-            #self.device_manager.wait_for_disconnect_drone()
+            time.sleep(10)
+            self.device_manager.wait_for_disconnect_drone()
+        print("Moving process halted")
+        exit(0)
     def handle_sending_process(self, queue_status: multiprocessing.Queue) -> None:
+        print("Sending process started")
         while True:
-            print("Sending process started")
+            
             dbox_index = str(self.device_manager.dbox_index)
             self.uploading = False
             subfolder_name_list = self.device_manager.get_folder_names_drone(dbox_index)
+            print(subfolder_name_list)
             self.azure_storage.uploaded_bytes = 0
             self.azure_storage.total_bytes = 0
             for subfolder_name in subfolder_name_list[:]:
                 self.azure_storage.total_bytes += self.device_manager.get_folder_size(os.path.join(self.device_manager.output_folder_path, dbox_index, subfolder_name))
             for subfolder_name in subfolder_name_list[:]:
+                print(subfolder_name)
                 if self.stop_signal_sending.is_set():
                     break
                 if not (self.in_progress_word in subfolder_name):
                     continue
                 self.uploading = True
                 self.queue_status(UploadState.NO_UPLOAD, self.uploaded_bytes, self.total_bytes, queue_status)
-                uploaded_files = self.azure_storage.send_data_drone(os.path.join(self.device_manager.output_folder_path, dbox_index), subfolder_name, self.device_manager.drone_device_name, self.container_name, self.in_progress_word, self.stop_signal_sending, queue_status, self.device_manager.time_interval)
+                uploaded_files = self.azure_storage.send_data_drone(os.path.join(self.device_manager.output_folder_path, dbox_index), subfolder_name, self.container_name, self.in_progress_word, self.stop_signal_sending, queue_status, self.device_manager.time_interval)
                 self.queue_status(UploadState.IN_PROGRESS, self.uploaded_bytes, self.total_bytes, queue_status)
                 if not uploaded_files:
                     continue
-                if not self.device_manager.rename_files_drone(subfolder_name, uploaded_files, self.in_progress_word):
+                if not self.device_manager.rename_files_drone(subfolder_name, uploaded_files, self.in_progress_word, self.device_manager.dbox_index):
                     new_folder_name = f"{subfolder_name}_{self.in_progress_word}"
-                    self.device_manager.rename_files_drone(new_folder_name, uploaded_files, self.in_progress_word)
+                    self.device_manager.rename_files_drone(new_folder_name, uploaded_files, self.in_progress_word, self.device_manager.dbox_index)
             if self.stop_signal_sending.is_set():
                 self.queue_status(UploadState.PAUSED, self.uploaded_bytes, self.total_bytes, queue_status)
                 break
@@ -573,12 +594,13 @@ class ProcessHandler:
         data = (status, progress, total)
         queue.put(data)
     def handle_trash_process(self) -> None:
+        dbox_index = str(self.device_manager.dbox_index)
         while not self.stop_signal_trash.is_set():
-            subfolder_name_list = self.device_manager.get_folder_names_drone(self.device_manager.dbox_index)
+            subfolder_name_list = self.device_manager.get_folder_names_drone(dbox_index)
             for subfolder_name in subfolder_name_list[:]:
                 if self.stop_signal_trash.is_set():
                     break
-                subfolder_path = os.path.join(self.device_manager.output_folder_path, self.device_manager.dbox_index, subfolder_name)
+                subfolder_path = os.path.join(self.device_manager.output_folder_path, dbox_index, subfolder_name)
                 try:
                     directory_files = os.listdir(subfolder_path)
                     for file in directory_files:
@@ -591,10 +613,11 @@ class ProcessHandler:
                     print(f"Error: {e}")
                     continue
                 try:
-                    if len(os.listdir(os.path.join(self.device_manager.output_folder_path, self.device_manager.dbox_index, subfolder_name))) == 0 and os.path.exists(os.path.join(self.device_manager.output_folder_path, subfolder_name)) and self.in_progress_word in subfolder_name:
+                    if len(os.listdir(os.path.join(self.device_manager.output_folder_path, dbox_index, subfolder_name))) == 0 and os.path.exists(os.path.join(self.device_manager.output_folder_path, dbox_index, subfolder_name)) and self.in_progress_word in subfolder_name:
                         print(f"Empty subfolder {subfolder_name}")
                         try :
-                            os.rmdir(os.path.join(self.device_manager.output_folder_path, self.device_manager.dbox_index, subfolder_name))
+                            os.rmdir(os.path.join(self.device_manager.output_folder_path, dbox_index, subfolder_name))
+                            #subprocess.run(['/usr/bin/sudo', '/usr/bin/rmdir', source_path], check=True)
                         except OSError as e:
                             print(f"Error, folder was not empty: {e}")
                             continue
@@ -606,14 +629,14 @@ class ProcessHandler:
         exit(0)
     def stop_sending(self) -> None:
         self.stop_signal_sending.set()
-        self.send_process.join()
+        #self.send_process.join()
         self.sending_bool = False
     def stop_moving(self) -> None:
         self.stop_signal_moving.set()
         self.stop_signal_download.set()
     def stop_trash(self) -> None:
         self.stop_signal_trash.set()
-        self.trash_collecting_process.join()
+        #self.trash_collecting_process.join()
     def start_trash(self) -> None:
         if self.trash_collecting_process.is_alive():
             time.sleep(10)
@@ -625,14 +648,14 @@ class ProcessHandler:
         self.stop_signal_download.clear()
         self.stop_signal_moving.clear()
         if self.move_process.is_alive():
-            time.sleep(10)
+            #time.sleep(10)
             if self.move_process.is_alive():
                 return
         self.move_process = multiprocessing.Process(target=self.handle_moving_process, args=(self.queue_download, self.queue_response,))
         self.move_process.start()
     def start_sending(self) -> None:
         if self.send_process.is_alive():
-            time.sleep(10)
+            #time.sleep(10)
             if self.send_process.is_alive():
                 return
         self.send_process = multiprocessing.Process(target=self.handle_sending_process, args=(self.queue_upload,))
@@ -640,6 +663,7 @@ class ProcessHandler:
         self.sending_bool = True
     def monitor_processes(self, client: mqtt.Client) -> None:
         while True:
+
             #download_amount // download_progress
             self.update_download_status()
             #uploaded_bytes // total_bytes
@@ -649,6 +673,7 @@ class ProcessHandler:
             client.loop_start()
             self.make_download_stream_message(client)
             self.make_upload_stream_message(client)
+            print("Sending messages")
             time.sleep(self.device_manager.time_interval)
             client.loop_stop()
             # Check if processes are alive
@@ -722,6 +747,8 @@ def on_message(client, userdata, msg, process_handler: ProcessHandler):
     if msg.topic == MQTT_TOPIC_DWNREQ:
         download_request = DownloadAllowanceStream()
         download_request.ParseFromString(msg.payload)
+        state = DownloadAllowance.Name(download_request.allowance)
+        print(f"RECEIVED STATE {state}")
         if download_request.allowance == DownloadAllowance.DL_ALLOWED:
             process_handler.start_moving()
             print("Received start moving")
@@ -753,8 +780,8 @@ if __name__ == "__main__":
     input_device_name = config.get('device.inputDeviceName')
     container_name = config.get('azureStorage.containerName')
     storage_account_name = config.get('azureStorage.storageAccountName')
-    azure_connection_file_name = config.get('azureStorage.azureConnectionFileNameYAML')
-    #azure_connection_file_name = config.get('azureStorage.azureConnectionFileNameJSON')
+    #azure_connection_file_name = config.get('azureStorage.azureConnectionFileNameYAML')
+    azure_connection_file_name = config.get('azureStorage.azureConnectionFileNameJSON')
     input_device_mount_point = config.get('device.inputDeviceMountPoint')
     delete_key_word = config.get('processing.deleteKeyWord')
     drone_vendor_id = config.get('drone.vendorID')
