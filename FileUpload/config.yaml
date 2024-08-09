@@ -8,6 +8,7 @@ azureStorage:
   storageAccountName: "dbox4storage"
   azureConnectionFileNameYAML: "azureConnection.yaml"
   azureConnectionFileNameJSON: "azureConnectionString.json"
+  azurePreFolder: "DBOXNAME"
 
 # Configuration for drone
 drone:

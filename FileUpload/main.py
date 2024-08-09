@@ -63,10 +63,11 @@ class ConfigJSON:
 
 
 class AzureStorage:
-    def __init__(self, storage_account_name: str, azure_connection_file_name: str, chunk_size: str) -> None:
+    def __init__(self, storage_account_name: str, azure_connection_file_name: str, chunk_size: str, azure_pre_folder: str) -> None:
         self.storage_account_name = storage_account_name
         self.azure_connection_file_name = azure_connection_file_name
         self.blob_service_client = None
+        self.azure_pre_folder = azure_pre_folder
         try:
             result = float(chunk_size)
             self.chunk_size = result
@@ -139,6 +140,9 @@ class AzureStorage:
             try:
                 with open(file_path, "rb") as data:
                     proxy_name = blob_name.replace(f"_{in_progress_word}", "")
+                    #proxy_name = proxy_name.replace("_(Copy)", "")
+                    proxy_name = os.path.join(self.azure_pre_folder, proxy_name)
+                    proxy_name = proxy_name.replace(os.sep, '/')
                     container = self.blob_service_client.get_container_client(container_name)
                     container.upload_blob(name=proxy_name, data=data, overwrite=True)
                 print(f"UPLOADING {file} SUCCESS")
@@ -167,6 +171,8 @@ class AzureStorage:
             for file in os.listdir(folder_path):
                 if stop_signal.is_set():
                     print("Stopping sending process")
+                    data = (UploadState.PAUSED, self.uploaded_bytes, self.total_bytes)
+                    queue.put(data)
                     break
                 if not is_jpeg_by_filename(file) or in_progress_word in file:
                     continue
@@ -184,7 +190,130 @@ class AzureStorage:
         except FileNotFoundError as e:
             ...
         return uploaded_file_names
+    def send_data_concurrently_drone(self, output_folder_path: str, subfolder_name: str, container_name: str, in_progress_word: str, stop_signal: multiprocessing.Event, queue: multiprocessing.Queue, time_interval) -> Optional[List[str]]:
+        folder_path = os.path.join(output_folder_path, subfolder_name)
+        uploaded_file_names = []
+        start_time = time.time()
+        if not os.path.exists(folder_path) or not os.path.isdir(folder_path):
+            return
+        def upload_file(file: str) -> Optional[str]:
+            if stop_signal.is_set():
+                return None
+            if not is_jpeg_by_filename(file) or in_progress_word in file:
+                return None
+            file_path = os.path.join(folder_path, file)
+            blob_name = os.path.join(subfolder_name, file).replace(os.sep, '/')
+            if self.upload_blob(container_name, file, file_path, blob_name, in_progress_word, stop_signal):
+                self.uploaded_bytes += os.path.getsize(file_path)
+                return file
+            return None
+        files = [file for file in os.listdir(folder_path) if os.path.isfile(os.path.join(folder_path, file))]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            futures = [executor.submit(upload_file, file) for file in files]
+            for future in concurrent.futures.as_completed(futures):
+                if stop_signal.is_set():
+                    data = (UploadState.PAUSED, self.uploaded_bytes, self.total_bytes)
+                    queue.put(data)
+                    break
+                current_time = time.time()
+                if current_time - start_time >= time_interval:
+                    start_time = current_time
+                    data = (UploadState.IN_PROGRESS, self.total_bytes, self.uploaded_bytes)
+                    queue.put(data)
+                result = future.result()
+                if result:
+                    uploaded_file_names.append(result)
+                elif result is None and not future.cancelled():
+                    break
+        return uploaded_file_names
+    #container_name, file, file_path, blob_name, in_progress_word, stop_signal
+    def upload_blob_chunked_drone(self, container_name: str, file: str, file_path: str, blob_name: str, in_progress_word, stop_signal) -> bool:
+        while not stop_signal.is_set():
 
+            if blob_name.startswith(f"{in_progress_word}_"):
+                blob_name = blob_name.replace(f"{in_progress_word}_", "", 1)
+            #blob_name = blob_name.replace("_(Copy)", "")
+            blob_name = os.path.join(self.azure_pre_folder, blob_name)
+            blob_name = blob_name.replace(os.sep, '/')
+            
+            blob_client = self.blob_service_client.get_blob_client(container=container_name, blob=blob_name)
+            with open(file_path, "rb") as data:
+                try:
+                    blob_client.upload_blob(
+                        data, 
+                        blob_type="BlockBlob", 
+                        overwrite=True, 
+                        max_concurrency=4
+                    )
+                    print(f"Uploaded blob {blob_name} success")
+                    return True
+                except Exception as e:
+                    print(f"Failed to upload {file_path}: {e}")
+                    return False
+    def send_data_concurrently__chunked_drone(self, output_folder_path: str, subfolder_name: str, container_name: str, in_progress_word: str, stop_signal: multiprocessing.Event, queue: multiprocessing.Queue, time_interval) -> Optional[List[str]]:
+        folder_path = os.path.join(output_folder_path, subfolder_name)
+        uploaded_file_names = []
+        start_time = time.time()
+        if not os.path.exists(folder_path) or not os.path.isdir(folder_path):
+            return
+        def upload_file(file: str) -> Optional[str]:
+            if stop_signal.is_set():
+                return None
+            if not is_jpeg_by_filename(file) or in_progress_word in file:
+                return None
+            file_path = os.path.join(folder_path, file)
+            blob_name = os.path.join(subfolder_name, file).replace(os.sep, '/')
+            if self.upload_blob_chunked_drone(container_name, file, file_path, blob_name, in_progress_word, stop_signal):
+                self.uploaded_bytes += os.path.getsize(file_path)
+                return file
+            return None
+        files = [file for file in os.listdir(folder_path) if os.path.isfile(os.path.join(folder_path, file))]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            futures = [executor.submit(upload_file, file) for file in files]
+            for future in concurrent.futures.as_completed(futures):
+                if stop_signal.is_set():
+                    data = (UploadState.PAUSED, self.uploaded_bytes, self.total_bytes)
+                    queue.put(data)
+                    break
+                current_time = time.time()
+                if current_time - start_time >= time_interval:
+                    start_time = current_time
+                    data = (UploadState.IN_PROGRESS, self.total_bytes, self.uploaded_bytes)
+                    queue.put(data)
+                result = future.result()
+                if result:
+                    uploaded_file_names.append(result)
+                elif result is None and not future.cancelled():
+                    break
+        return uploaded_file_names
+    def send_data_chunked_drone(self, output_folder_path: str, subfolder_name: str, container_name: str, in_progress_word: str, stop_signal: multiprocessing.Event, queue: multiprocessing.Queue, time_interval) -> Optional[List[str]]:
+        folder_path = os.path.join(output_folder_path, subfolder_name)
+        uploaded_file_names = []
+        if not os.path.exists(folder_path) or not os.path.isdir(folder_path):
+            return
+        try:
+            for file in os.listdir(folder_path):
+                if stop_signal.is_set():
+                    print("Stopping sending process")
+                    data = (UploadState.PAUSED, self.uploaded_bytes, self.total_bytes)
+                    queue.put(data)
+                    break
+                if not is_jpeg_by_filename(file) or in_progress_word in file:
+                    continue
+                file_path = os.path.join(folder_path, file)
+                blob_name = os.path.join(subfolder_name, file).replace(os.sep, '/')
+                start_time = time.time()
+                if self.upload_blob_chunked_drone(container_name, file, file_path, blob_name, in_progress_word, stop_signal):
+                    uploaded_file_names.append(file)
+                    self.uploaded_bytes += os.path.getsize(file_path)
+                    current_time = time.time()
+                    if current_time - start_time >= time_interval:
+                        start_time = current_time
+                        data = (UploadState.IN_PROGRESS, self.uploaded_bytes, self.total_bytes)
+                        queue.put(data)
+        except FileNotFoundError as e:
+            ...
+        return uploaded_file_names
 class DeviceManager:
     def __init__(self, input_device_name: str, input_device_mount_point: str, drone_vendor_id: str, image_folder_path: str, output_folder_path: str, time_interval: int, chunk_size: int, dbox_index: str) -> None:
         self.input_device_mount_point = os.path.join(input_device_mount_point, input_device_name)
@@ -235,7 +364,7 @@ class DeviceManager:
     def unmount_drone(self) -> None:
         if self.drone_mount_point is not None:
             self.unmount_disk(self.drone_device, self.drone_mount_point)
-    def move_data_from_drone(self, folder_name: str, chunk_size: int, stop_signal: multiprocessing.Event, queue: multiprocessing.Queue) -> None:
+    def move_data_from_drone(self, folder_name: str, chunk_size: int, stop_signal: multiprocessing.Event, queue: multiprocessing.Queue, in_progress_word: str) -> None:
         folder_name = str(folder_name)
         source_path = os.path.join(self.drone_mount_point, self.image_folder_path)
         folder_list = os.listdir(source_path)
@@ -308,8 +437,22 @@ class DeviceManager:
             if stop_signal.is_set():
                 print("Moving process interrupted")
                 return
+            DBOX_INDEX = str(self.dbox_index)
+            self.rename_folder(folder, os.path.join(self.output_folder_path, DBOX_INDEX) , in_progress_word)
         print("Finished moving all files")
         return
+    def rename_folder(self, folder_name: str, folder_path: str, in_progress_word: str) -> None:
+        #new_folder_name = f"{folder_name}_{in_progress_word}"
+        new_folder_name = f"{in_progress_word}_{folder_name}"
+        new_folder_path = os.path.join(folder_path, new_folder_name)
+        old_folder_path = os.path.join(folder_path, folder_name)
+        try:
+            os.rename(old_folder_path, new_folder_path)
+        except Exception as e:
+            print(f"Error renaming folder: {e}")
+            new_folder_name = f"{folder_name}_{in_progress_word}_(Copy)"
+            new_folder_path = os.path.join(folder_path, new_folder_name)
+            os.rename(old_folder_path, new_folder_path)
 
     def get_folder_size(self, folder_path: str) -> int:
         size = 0
@@ -339,9 +482,10 @@ class DeviceManager:
         return latest_date
     def rename_folder_drone(self, folder_name: str, in_progress_word: str) -> None:
         try:
-            folder_path = os.path.join(self.output_folder_path, folder_name)
+            DBOX_INDEX = str(self.dbox_index)
+            folder_path = os.path.join(self.output_folder_path, DBOX_INDEX, folder_name)
             new_folder_name = f"{folder_name}_{in_progress_word}"
-            new_folder_path = os.path.join(self.output_folder_path, new_folder_name)
+            new_folder_path = os.path.join(self.output_folder_path, DBOX_INDEX, new_folder_name)
             os.rename(folder_path, new_folder_path)
         except FileNotFoundError as e:
             print("Folder not found skipping")
@@ -354,7 +498,7 @@ class DeviceManager:
             try:
                 new_folder_name = f"{folder}_{in_progress_word}"
                 new_folder_path = os.path.join(path, new_folder_name)
-                os.rename(folder_path, new_folder_path)    
+                os.rename(folder_path, new_folder_path)  
             except Exception as e:
                 new_folder_name = f"{folder}_{in_progress_word} (Copy)"
                 new_folder_path = os.path.join(path, new_folder_name)
@@ -365,7 +509,7 @@ class DeviceManager:
         folder_path = os.path.join(self.output_folder_path, dbox_index, folder_name)
         for file in files:
             file_path = os.path.join(folder_path, file)
-            new_file_name = file.replace(file, in_progress_word)
+            new_file_name = f"{in_progress_word}_{file}"
             new_file_path = os.path.join(folder_path, new_file_name)
             try:
                 os.rename(file_path, new_file_path)
@@ -524,7 +668,7 @@ class ProcessHandler:
     def start_processes(self) -> None:
        # self.move_process.start()
        # self.send_process.start()
-       # self.trash_collecting_process.start()
+        self.trash_collecting_process.start()
         
         self.monitor_processes(self.client)
     
@@ -535,13 +679,13 @@ class ProcessHandler:
             self.queue_status_download(DownloadState.IDLE, self.device_manager.moved_data, self.device_manager.drone_folder_size, queue_status)
             self.device_manager.listen_for_drone(queue_status, self.stop_signal_download)
             self.queue_status_download(DownloadState.BUSY, self.device_manager.moved_data, self.device_manager.drone_folder_size, queue_status)
-            self.device_manager.move_data_from_drone(self.device_manager.dbox_index, self.device_manager.chunk_size, self.stop_signal_moving, queue_status)
+            self.device_manager.move_data_from_drone(self.device_manager.dbox_index, self.device_manager.chunk_size, self.stop_signal_moving, queue_status, self.in_progress_word)
             self.downloading = False
             dbox_index = str(self.device_manager.dbox_index)
             self.device_manager.remove_folders()
             self.device_manager.unmount_drone()
             self.queue_status_download(DownloadState.IDLE, self.device_manager.moved_data, self.device_manager.drone_folder_size, queue_status)
-            self.device_manager.rename_folders_drone(os.path.join(self.device_manager.output_folder_path, dbox_index), self.in_progress_word)
+            #self.device_manager.rename_folders_drone(os.path.join(self.device_manager.output_folder_path, dbox_index), self.in_progress_word)
             
             if self.stop_signal_moving.is_set():
                 print("Moving process halted, drone unmounted")
@@ -572,16 +716,74 @@ class ProcessHandler:
                     continue
                 self.uploading = True
                 self.queue_status(UploadState.NO_UPLOAD, self.uploaded_bytes, self.total_bytes, queue_status)
-                uploaded_files = self.azure_storage.send_data_drone(os.path.join(self.device_manager.output_folder_path, dbox_index), subfolder_name, self.container_name, self.in_progress_word, self.stop_signal_sending, queue_status, self.device_manager.time_interval)
+                
+                #try:
+                #    start_time = time.time()
+                #    uploaded_files = self.azure_storage.send_data_drone(os.path.join(self.device_manager.output_folder_path, dbox_index), subfolder_name, self.container_name, self.in_progress_word, self.stop_signal_sending, queue_status, self.device_manager.time_interval)
+                #    end_time = time.time()
+                #    spent_time = end_time - start_time
+                #    file = open('log_upload_txt', 'a')  # 'a' mode to append
+                #    file.write(f"sending data linear time {spent_time}\n")
+                #    file.close()
+                #except Exception as e:
+                #    print(f"Error: IN SENDING DATA LINEAR{e}")
+                #    file = open('log_upload_txt', 'a')  # 'a' mode to append
+                #    file.write("Error: IN SENDING DATA LINEAR\n")
+                #    continue
+                #try:
+                #    start_time = time.time()
+                #    uploaded_files = self.azure_storage.send_data_chunked_drone(os.path.join(self.device_manager.output_folder_path, dbox_index), subfolder_name, self.container_name, self.in_progress_word, self.stop_signal_sending, queue_status, self.device_manager.time_interval)
+                #    end_time = time.time()
+                #    spent_time = end_time - start_time
+                #    file = open('log_upload_txt', 'a')  # 'a' mode to append
+                #    file.write(f"sending data linear chunked time {spent_time}\n")
+                #    file.close()
+
+                #except Exception as e:
+                #    print(f"Error: IN SENDING DATA LINEAR CHUNKED{e}")
+                #    file = open('log_upload_txt', 'a')  # 'a' mode to append
+                #    file.write("Error: IN SENDING DATA LINEAR CHUNKED\n")
+                #    continue
+                #try:
+                #    start_time = time.time()
+                #    uploaded_files = self.azure_storage.send_data_concurrently_drone(os.path.join(self.device_manager.output_folder_path, dbox_index), subfolder_name, self.container_name, self.in_progress_word, self.stop_signal_sending, queue_status, self.device_manager.time_interval)
+                #    end_time = time.time()
+                #    spent_time = end_time - start_time
+                #    file = open('log_upload_txt', 'a')  # 'a' mode to append
+                #    file.write(f"sending data concurrently time {spent_time}\n")
+                #    file.close()
+    
+                #except Exception as e:
+                #    print(f"Error: IN SENDING DATA CONCURRENTLY{e}")
+                #    file = open('log_upload_txt', 'a')  # 'a' mode to append
+                #    file.write("Error: IN SENDING DATA CONCURRENTLY\n")
+                #    continue
+                uploaded_files = []
+                try:
+                    start_time = time.time()
+                    uploaded_files = self.azure_storage.send_data_concurrently__chunked_drone(os.path.join(self.device_manager.output_folder_path, dbox_index), subfolder_name, self.container_name, self.in_progress_word, self.stop_signal_sending, queue_status, self.device_manager.time_interval)
+                    end_time = time.time()
+                    spent_time = end_time - start_time
+                    file = open('log_upload_txt', 'a')  # 'a' mode to append
+                    file.write(f"sending data concurrently chunked time {spent_time}\n")
+                    file.close()    
+                except Exception as e:
+                    print(f"Error: IN SENDING DATA CONCURRENTLY CHUNKED{e}")
+                    file = open('log_upload_txt', 'a')  # 'a' mode to append
+                    file.write("Error: IN SENDING DATA CONCURRENTLY CHUNKED\n")
+                    continue
+                
                 self.queue_status(UploadState.IN_PROGRESS, self.uploaded_bytes, self.total_bytes, queue_status)
                 if not uploaded_files:
                     continue
                 if not self.device_manager.rename_files_drone(subfolder_name, uploaded_files, self.in_progress_word, self.device_manager.dbox_index):
-                    new_folder_name = f"{subfolder_name}_{self.in_progress_word}"
+                    new_folder_name = f"{self.in_progress_word}_{subfolder_name}"
                     self.device_manager.rename_files_drone(new_folder_name, uploaded_files, self.in_progress_word, self.device_manager.dbox_index)
             if self.stop_signal_sending.is_set():
                 self.queue_status(UploadState.PAUSED, self.uploaded_bytes, self.total_bytes, queue_status)
                 break
+            else:
+                self.queue_status(UploadState.FINISHED, self.uploaded_bytes, self.total_bytes, queue_status)
             self.queue_status(UploadState.NO_UPLOAD, self.uploaded_bytes, self.total_bytes, queue_status)
             time.sleep(self.device_manager.time_interval)
         print("Sending process halted")
@@ -601,17 +803,18 @@ class ProcessHandler:
                 if self.stop_signal_trash.is_set():
                     break
                 subfolder_path = os.path.join(self.device_manager.output_folder_path, dbox_index, subfolder_name)
-                try:
-                    directory_files = os.listdir(subfolder_path)
-                    for file in directory_files:
-                        if self.stop_signal_trash.is_set():
-                            break
-                        if self.in_progress_word in file:
-                            file_path = os.path.join(subfolder_path, file)
-                            os.remove(file_path)
-                except FileNotFoundError as e:
-                    print(f"Error: {e}")
-                    continue
+                if subfolder_name.startswith(f"{self.in_progress_word}_"):
+                    try:
+                        directory_files = os.listdir(subfolder_path)
+                        for file in directory_files:
+                            if self.stop_signal_trash.is_set():
+                                break
+                            if file.startswith(f"{self.in_progress_word}_"):
+                                file_path = os.path.join(subfolder_path, file)
+                                os.remove(file_path)
+                    except FileNotFoundError as e:
+                        print(f"Error: {e}")
+                        continue
                 try:
                     if len(os.listdir(os.path.join(self.device_manager.output_folder_path, dbox_index, subfolder_name))) == 0 and os.path.exists(os.path.join(self.device_manager.output_folder_path, dbox_index, subfolder_name)) and self.in_progress_word in subfolder_name:
                         print(f"Empty subfolder {subfolder_name}")
@@ -638,6 +841,7 @@ class ProcessHandler:
         self.stop_signal_trash.set()
         #self.trash_collecting_process.join()
     def start_trash(self) -> None:
+        
         if self.trash_collecting_process.is_alive():
             time.sleep(10)
             if self.trash_collecting_process.is_alive():
@@ -799,6 +1003,7 @@ if __name__ == "__main__":
     MQTT_BROKER = config.get('mqtt.broker')
     MQTT_CLIENT_NAME = config.get('mqtt.clientId')
     DBOX_INDEX = config.get('dbox.index')
+    AZURE_PRE_FOLDER = config.get('azureStorage.azurePreFolder')
     if None in [input_device_name, container_name, storage_account_name, azure_connection_file_name, input_device_mount_point, delete_key_word, drone_vendor_id, image_folder_path, output_folder_path, time_interval, upload_chunk_size, download_chunk_size, MQTT_PORT, MQTT_TOPIC_DWNSTR, MQTT_TOPIC_UPLSTR, MQTT_TOPIC_DWNRES, MQTT_TOPIC_UPLREQ, MQTT_TOPIC_DWNREQ, MQTT_BROKER, MQTT_CLIENT_NAME]:    
         print("Failed to retrieve values exiting program.")
         exit(1)
@@ -806,7 +1011,7 @@ if __name__ == "__main__":
         mqtt_client = mqtt.Client(MQTT_CLIENT_NAME)
     except Exception as e:
         mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, MQTT_CLIENT_NAME)
-    azure_storage = AzureStorage(storage_account_name, azure_connection_file_name, upload_chunk_size)
+    azure_storage = AzureStorage(storage_account_name, azure_connection_file_name, upload_chunk_size, AZURE_PRE_FOLDER)
     if azure_storage.check_connection == False:
         print("Failed to connect to Azure")
         exit(1)
@@ -814,8 +1019,15 @@ if __name__ == "__main__":
     process_handler = ProcessHandler(azure_storage, device_manager, delete_key_word, container_name, mqtt_client, MQTT_TOPIC_DWNSTR, MQTT_TOPIC_UPLSTR, MQTT_TOPIC_DWNRES, MQTT_TOPIC_UPLREQ, MQTT_TOPIC_DWNREQ)
     mqtt_client.on_connect = on_connect
     mqtt_client.on_message = on_message_wrapper(process_handler)
-    if mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60) != 0:
-        print("MQTT | Connection failed")
-        exit(1)
+
+    while True:
+        try:
+            mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
+            break
+        except Exception as e:
+            print("MQTT | Connection failed, retrying")
+            time.sleep(time_interval)
+            continue
     process_handler.start_processes()
     
+
